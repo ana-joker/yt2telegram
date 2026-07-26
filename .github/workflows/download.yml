@@ -2,7 +2,19 @@ name: YouTube Downloader
 
 on:
   repository_dispatch:
-    types: [download-youtube]
+    types:
+      - download-youtube
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'YouTube URL'
+        required: true
+        type: string
+      caption:
+        description: 'Caption text'
+        required: false
+        default: 'From Albedo'
+        type: string
 
 jobs:
   download:
@@ -11,6 +23,14 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Debug Event
+        run: |
+          echo "Event name: ${{ github.event_name }}"
+          echo "Event action: ${{ github.event.action }}"
+          echo "Has URL in payload: ${{ github.event.client_payload.url != '' }}"
+          echo "Has URL in inputs: ${{ inputs.url != '' }}"
+          echo "Caption: ${{ github.event.client_payload.caption }}${{ inputs.caption }}"
+
       - name: Install yt-dlp
         run: |
           sudo apt-get update -qq
@@ -20,7 +40,7 @@ jobs:
       - name: Download Video
         id: download
         run: |
-          URL="${{ github.event.client_payload.url }}"
+          URL="${{ github.event.client_payload.url || inputs.url }}"
           echo "📥 Downloading: $URL"
           yt-dlp --restrict-filenames \
             -f "best[ext=mp4]/best" \
@@ -43,7 +63,7 @@ jobs:
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
           FILE="${{ steps.download.outputs.filename }}"
-          CAPTION="${{ github.event.client_payload.caption }}"
+          CAPTION="${{ github.event.client_payload.caption || inputs.caption }}"
           
           # Determine file type by extension
           EXT="${FILE##*.}"
