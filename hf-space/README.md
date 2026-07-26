@@ -3,22 +3,13 @@ title: YouTube → Telegram Bridge
 emoji: 📹
 colorFrom: blue
 colorTo: green
-sdk: docker
-app_port: 7860
+sdk: gradio
+sdk_version: 5.0.0
+app_file: app.py
+pinned: false
 ---
 
 # YouTube → Telegram Bridge
 
-Zero-local-usage YouTube downloader. Receives a YouTube link, downloads via yt-dlp,
-and uploads the video directly to a Telegram chat.
-
-## API
-
-- `GET /health` — health check
-- `POST /download` — `{"url": "youtube_link", "caption": "optional text"}`
-- `POST /download-short` — optimized for Shorts/short content
-
-## Environment Variables
-
-- `TG_BOT_TOKEN` — Telegram bot token
-- `TG_CHAT_ID` — Target chat ID
+Zero-local-usage YouTube downloader. Paste a YouTube link, it gets downloaded
+via yt-dlp and uploaded to Telegram. All cloud, no device usage.

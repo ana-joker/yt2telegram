@@ -1,63 +1,33 @@
 """
-YouTube → Telegram Bridge - Hugging Face Space
+YouTube → Telegram Bridge - Hugging Face Space (Gradio)
 Receives YouTube links, downloads via yt-dlp, uploads to Telegram.
 Zero local device usage — all runs on HF cloud.
 """
 
 import os
-import json
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import gradio as gr
 import httpx
-import uvicorn
-
-app = FastAPI(title="YouTube → Telegram Bridge")
+import json
 
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 
-class DownloadRequest(BaseModel):
-    url: str
-    caption: str = ""
-
-class StatusResponse(BaseModel):
-    status: str
-    message: str = ""
-
-@app.get("/")
-def root():
-    return {"status": "alive", "service": "yt2telegram bridge"}
-
-@app.get("/health")
-def health():
-    if not BOT_TOKEN or not CHAT_ID:
-        return {"status": "degraded", "message": "Telegram credentials not configured"}
-    
-    # Check if yt-dlp is available
-    try:
-        result = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
-        yt_dlp_version = result.stdout.strip()
-    except:
-        yt_dlp_version = "not found"
-    
-    return {
-        "status": "ok",
-        "yt-dlp": yt_dlp_version,
-        "telegram": "configured" if BOT_TOKEN else "missing"
-    }
-
-@app.post("/download", response_model=StatusResponse)
-async def download_video(request: DownloadRequest):
-    """Download a YouTube video and send it to Telegram."""
+def download_and_send(url, status_box):
+    """Download YouTube video and send to Telegram."""
     
     if not BOT_TOKEN or not CHAT_ID:
-        raise HTTPException(500, "Telegram not configured")
+        yield status_box, "❌ Telegram not configured. Set TG_BOT_TOKEN and TG_CHAT_ID secrets."
+        return
     
-    if not request.url:
-        raise HTTPException(400, "No URL provided")
+    if not url or not url.strip():
+        yield status_box, "❌ Please provide a YouTube URL."
+        return
+    
+    yield status_box, f"⏳ Starting download: {url}"
     
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
@@ -70,31 +40,35 @@ async def download_video(request: DownloadRequest):
                 "-f", "best[ext=mp4]/best",
                 "-o", output_template,
                 "--print", "filename",
-                request.url
-            ], capture_output=True, text=True, timeout=300)  # 5 min timeout
+                url.strip()
+            ], capture_output=True, text=True, timeout=300)
             
             if result.returncode != 0:
-                raise HTTPException(500, f"yt-dlp failed: {result.stderr[:500]}")
+                err = result.stderr[:500]
+                yield status_box, f"❌ Download failed: {err}"
+                return
             
             # Find the downloaded file
             output_files = list(Path(tmpdir).iterdir())
             if not output_files:
-                raise HTTPException(500, "No output file produced")
+                yield status_box, "❌ No output file produced."
+                return
             
             video_path = output_files[0]
             file_size_mb = video_path.stat().st_size / (1024 * 1024)
+            yield status_box, f"📦 Downloaded: {video_path.name} ({file_size_mb:.1f} MB). Uploading to Telegram..."
             
             # Step 2: Upload to Telegram
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                with open(video_path, "rb") as f:
-                    files = {"video": (video_path.name, f, "video/mp4")}
-                    data = {
-                        "chat_id": CHAT_ID,
-                        "caption": request.caption or video_path.name,
-                        "supports_streaming": "true"
-                    }
-                    
-                    resp = await client.post(
+            with open(video_path, "rb") as f:
+                files = {"video": (video_path.name, f, "video/mp4")}
+                data = {
+                    "chat_id": CHAT_ID,
+                    "caption": video_path.name,
+                    "supports_streaming": "true"
+                }
+                
+                with httpx.Client(timeout=300.0) as client:
+                    resp = client.post(
                         f"https://api.telegram.org/bot{BOT_TOKEN}/sendVideo",
                         data=data,
                         files=files
@@ -103,40 +77,99 @@ async def download_video(request: DownloadRequest):
                     tg_result = resp.json()
                     
                     if tg_result.get("ok"):
-                        return StatusResponse(
-                            status="success",
-                            message=f"Video sent to Telegram ({file_size_mb:.1f} MB)"
-                        )
+                        yield status_box, f"✅ SUCCESS! Video sent to Telegram ({file_size_mb:.1f} MB)"
                     else:
-                        # Try as document if video fails
+                        # Try as document
                         with open(video_path, "rb") as f2:
                             files2 = {"document": (video_path.name, f2, "application/octet-stream")}
-                            resp2 = await client.post(
+                            resp2 = client.post(
                                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendDocument",
-                                data={"chat_id": CHAT_ID, "caption": request.caption or video_path.name},
+                                data={"chat_id": CHAT_ID, "caption": video_path.name},
                                 files=files2
                             )
-                            tg_result2 = resp2.json()
-                            if tg_result2.get("ok"):
-                                return StatusResponse(
-                                    status="success",
-                                    message=f"File sent to Telegram as document ({file_size_mb:.1f} MB)"
-                                )
+                            tg2 = resp2.json()
+                            if tg2.get("ok"):
+                                yield status_box, f"✅ Sent as document ({file_size_mb:.1f} MB)"
                             else:
-                                raise HTTPException(502, f"Telegram error: {tg_result2}")
+                                yield status_box, f"❌ Telegram error: {tg2}"
         
         except subprocess.TimeoutExpired:
-            raise HTTPException(504, "Download timed out (5 min limit)")
+            yield status_box, "❌ Download timed out (5 min limit for larger videos)"
         except Exception as e:
-            raise HTTPException(500, str(e)[:500])
+            yield status_box, f"❌ Error: {str(e)[:500]}"
 
-@app.post("/download-short")
-async def download_short(request: DownloadRequest):
-    """
-    Lightweight endpoint for shorter content (Shorts, < 5 min).
-    Same as /download but with lower timeout and optimized for quick media.
-    """
-    return await download_video(request)
+
+def health_check():
+    """Return service status."""
+    info = []
+    
+    info.append(f"🤖 Bot configured: {'✅' if BOT_TOKEN else '❌'}")
+    info.append(f"👤 Chat ID set: {'✅' if CHAT_ID else '❌'}")
+    
+    try:
+        result = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True)
+        info.append(f"📦 yt-dlp: {result.stdout.strip()}")
+    except:
+        info.append("📦 yt-dlp: ❌ not found")
+    
+    try:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True)
+        first_line = result.stdout.split("\n")[0] if result.stdout else "?"
+        info.append(f"🎬 ffmpeg: {first_line[:60]}")
+    except:
+        info.append("🎬 ffmpeg: ❌ not found")
+    
+    return "\n".join(info)
+
+
+# ─── Gradio UI ──────────────────────────────────
+
+with gr.Blocks(title="YouTube → Telegram Bridge", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("""
+    # 📹 YouTube → Telegram Bridge
+    
+    Paste any YouTube link (video, short, playlist) and it gets downloaded and sent to your Telegram.
+    
+    **All processing happens in the cloud — zero usage from your device.**
+    """)
+    
+    with gr.Row():
+        with gr.Column(scale=3):
+            url_input = gr.Textbox(
+                label="YouTube URL",
+                placeholder="https://youtube.com/watch?v=... or https://youtu.be/... or https://youtube.com/shorts/...",
+                lines=2
+            )
+            submit_btn = gr.Button("🚀 Download & Send to Telegram", variant="primary")
+        
+        with gr.Column(scale=2):
+            status_box = gr.Textbox(label="Status", lines=6, interactive=False)
+    
+    gr.Markdown("---")
+    
+    with gr.Accordion("Health Check", open=False):
+        health_btn = gr.Button("🩺 Check Service Status")
+        health_output = gr.Textbox(label="Status", lines=5)
+        health_btn.click(fn=health_check, outputs=health_output)
+    
+    submit_btn.click(
+        fn=download_and_send,
+        inputs=[url_input, gr.State()],
+        outputs=[status_box]
+    )
+    
+    gr.Markdown("""
+    ### How it works
+    1. You paste a YouTube URL
+    2. The Space downloads it with yt-dlp + ffmpeg
+    3. It uploads to Telegram via @CLI2ALBEDO_BOT
+    4. Video appears in your ahmed1 chat
+    
+    ### Limits
+    - Max 5 minutes download time (larger videos time out on free tier)
+    - Telegram file limit: 2GB (most videos are fine)
+    - Free tier may have cold starts (wake up delay)
+    """)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
