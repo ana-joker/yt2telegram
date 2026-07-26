@@ -1,0 +1,84 @@
+name: YouTube Downloader
+
+on:
+  repository_dispatch:
+    types: [download-youtube]
+
+jobs:
+  download:
+    name: Download & Send to Telegram
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Install yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          pip install -q yt-dlp
+
+      - name: Download Video
+        id: download
+        run: |
+          URL="${{ github.event.client_payload.url }}"
+          echo "📥 Downloading: $URL"
+          yt-dlp --restrict-filenames \
+            -f "best[ext=mp4]/best" \
+            -o "video.%(ext)s" \
+            "$URL" 2>&1
+          
+          FILE=$(ls video.* 2>/dev/null || ls *.mp4 *.mkv *.webm 2>/dev/null | head -1)
+          if [ -z "$FILE" ]; then
+            echo "❌ No video file found"
+            exit 1
+          fi
+          
+          SIZE_MB=$(du -m "$FILE" | cut -f1)
+          echo "📦 File: $FILE ($SIZE_MB MB)"
+          echo "filename=$FILE" >> $GITHUB_OUTPUT
+
+      - name: Upload to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          FILE="${{ steps.download.outputs.filename }}"
+          CAPTION="${{ github.event.client_payload.caption }}"
+          
+          # Determine file type by extension
+          EXT="${FILE##*.}"
+          
+          if [ "$EXT" = "mp4" ] || [ "$EXT" = "mkv" ] || [ "$EXT" = "webm" ]; then
+            curl -s -F "chat_id=$CHAT_ID" \
+              -F "video=@$FILE" \
+              -F "caption=$CAPTION" \
+              -F "supports_streaming=true" \
+              "https://api.telegram.org/bot$BOT_TOKEN/sendVideo" | python3 -c "
+import sys, json
+resp = json.load(sys.stdin)
+if resp.get('ok'):
+    print('✅ Video sent successfully')
+else:
+    print(f'❌ Failed: {resp}')
+    sys.exit(1)
+"
+          else
+            curl -s -F "chat_id=$CHAT_ID" \
+              -F "document=@$FILE" \
+              -F "caption=$CAPTION" \
+              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" | python3 -c "
+import sys, json
+resp = json.load(sys.stdin)
+if resp.get('ok'):
+    print('✅ File sent successfully')
+else:
+    print(f'❌ Failed: {resp}')
+    sys.exit(1)
+"
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f video.* *.mp4 *.mkv *.webm
+          echo "🧹 Cleaned up"
