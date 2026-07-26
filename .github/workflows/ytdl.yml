@@ -2,23 +2,22 @@ name: YouTube Downloader
 
 on:
   repository_dispatch:
-    types:
-      - download-youtube
+    types: [download-youtube]
   workflow_dispatch:
     inputs:
       url:
-        description: 'YouTube URL'
+        description: YouTube URL
         required: true
         type: string
       caption:
-        description: 'Caption text'
+        description: Caption text
         required: false
-        default: 'From Albedo'
+        default: From Albedo
         type: string
 
 jobs:
   download:
-    name: Download & Send to Telegram
+    name: Download and Send to Telegram
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -29,7 +28,6 @@ jobs:
           echo "Event action: ${{ github.event.action }}"
           echo "Has URL in payload: ${{ github.event.client_payload.url != '' }}"
           echo "Has URL in inputs: ${{ inputs.url != '' }}"
-          echo "Caption: ${{ github.event.client_payload.caption }}${{ inputs.caption }}"
 
       - name: Install yt-dlp
         run: |
@@ -41,20 +39,18 @@ jobs:
         id: download
         run: |
           URL="${{ github.event.client_payload.url || inputs.url }}"
-          echo "📥 Downloading: $URL"
+          echo "Downloading: $URL"
           yt-dlp --restrict-filenames \
             -f "best[ext=mp4]/best" \
             -o "video.%(ext)s" \
             "$URL" 2>&1
-          
           FILE=$(ls video.* 2>/dev/null || ls *.mp4 *.mkv *.webm 2>/dev/null | head -1)
           if [ -z "$FILE" ]; then
-            echo "❌ No video file found"
+            echo "No video file found"
             exit 1
           fi
-          
           SIZE_MB=$(du -m "$FILE" | cut -f1)
-          echo "📦 File: $FILE ($SIZE_MB MB)"
+          echo "File: $FILE ($SIZE_MB MB)"
           echo "filename=$FILE" >> $GITHUB_OUTPUT
 
       - name: Upload to Telegram
@@ -64,41 +60,38 @@ jobs:
         run: |
           FILE="${{ steps.download.outputs.filename }}"
           CAPTION="${{ github.event.client_payload.caption || inputs.caption }}"
-          
-          # Determine file type by extension
           EXT="${FILE##*.}"
-          
           if [ "$EXT" = "mp4" ] || [ "$EXT" = "mkv" ] || [ "$EXT" = "webm" ]; then
             curl -s -F "chat_id=$CHAT_ID" \
               -F "video=@$FILE" \
               -F "caption=$CAPTION" \
               -F "supports_streaming=true" \
               "https://api.telegram.org/bot$BOT_TOKEN/sendVideo" | python3 -c "
-import sys, json
-resp = json.load(sys.stdin)
-if resp.get('ok'):
-    print('✅ Video sent successfully')
-else:
-    print(f'❌ Failed: {resp}')
-    sys.exit(1)
-"
+        import sys, json
+        resp = json.load(sys.stdin)
+        if resp.get('ok'):
+            print('Video sent successfully')
+        else:
+            print(f'Failed: {resp}')
+            sys.exit(1)
+        "
           else
             curl -s -F "chat_id=$CHAT_ID" \
               -F "document=@$FILE" \
               -F "caption=$CAPTION" \
               "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" | python3 -c "
-import sys, json
-resp = json.load(sys.stdin)
-if resp.get('ok'):
-    print('✅ File sent successfully')
-else:
-    print(f'❌ Failed: {resp}')
-    sys.exit(1)
-"
+        import sys, json
+        resp = json.load(sys.stdin)
+        if resp.get('ok'):
+            print('File sent successfully')
+        else:
+            print(f'Failed: {resp}')
+            sys.exit(1)
+        "
           fi
 
       - name: Cleanup
         if: always()
         run: |
           rm -f video.* *.mp4 *.mkv *.webm
-          echo "🧹 Cleaned up"
+          echo "Cleaned up"
