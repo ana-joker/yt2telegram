@@ -1,85 +1,233 @@
-name: YouTube Downloader
+name: Video Downloader
 
 on:
   repository_dispatch:
-    types: [download-youtube]
+    types: [download-youtube, download]
   workflow_dispatch:
     inputs:
       url:
-        description: YouTube URL
+        description: 'Video URL (YouTube, Instagram, Facebook, Reddit, X/Twitter)'
         required: true
         type: string
       caption:
-        description: Caption text
+        description: Caption text for Telegram
         required: false
         default: From Albedo
+        type: string
+      max_videos:
+        description: Max videos to download (0 = unlimited, default 3)
+        required: false
+        default: '3'
         type: string
 
 jobs:
   download:
     name: Download and Send to Telegram
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Debug Event
         run: |
           echo "Event name: ${{ github.event_name }}"
           echo "Event action: ${{ github.event.action }}"
-          echo "Has URL in payload: ${{ github.event.client_payload.url != '' }}"
-          echo "Has URL in inputs: ${{ inputs.url != '' }}"
+          echo "URL: ${{ github.event.client_payload.url || inputs.url }}"
+          echo "Caption: ${{ github.event.client_payload.caption || inputs.caption }}"
+          echo "Max videos: ${{ github.event.client_payload.max_videos || inputs.max_videos }}"
 
-      - name: Install yt-dlp
+      - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-          pip install -q yt-dlp
+          sudo apt-get install -y -qq ffmpeg jq
+          pip install -q -U yt-dlp
+          yt-dlp --version
 
-      - name: Download Video
-        id: download
+      - name: Setup Cookies
+        env:
+          COOKIES_B64: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$COOKIES_B64" ]; then
+            echo "$COOKIES_B64" | base64 -d > cookies.txt
+            echo "Cookies decoded ($(wc -l < cookies.txt) lines)"
+          else
+            echo "WARNING: No cookies secret set - will try without auth"
+          fi
+
+      - name: Resolve Reddit Shortlinks
+        id: resolve
+        shell: bash
         run: |
           URL="${{ github.event.client_payload.url || inputs.url }}"
-          echo "Downloading: $URL"
+          echo "Original URL: $URL"
+
+          # Resolve Reddit /s/ shortlinks to full post URLs
+          if echo "$URL" | grep -qE 'reddit\.com/r/[^/]+/s/'; then
+            echo "Detected Reddit shortlink - resolving..."
+            RESOLVED=$(curl -sI -L -o /dev/null -w '%{url_effective}' "$URL" \
+              -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+            if [ -n "$RESOLVED" ] && [ "$RESOLVED" != "$URL" ]; then
+              echo "Resolved to: $RESOLVED"
+              URL="$RESOLVED"
+            fi
+          fi
+
+          echo "url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Download Media
+        id: download
+        shell: bash
+        run: |
+          URL="${{ steps.resolve.outputs.url }}"
+          MAX="${{ github.event.client_payload.max_videos || inputs.max_videos || '3' }}"
+          FORMAT="bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+
+          echo "URL: $URL"
+          echo "Max videos: $MAX"
+          echo "Format: $FORMAT"
+
+          mkdir -p downloads
+
+          # Build playlist items range
+          ITEMS_ARG=""
+          if [ "$MAX" != "0" ]; then
+            ITEMS_ARG="--playlist-end $MAX"
+          fi
+
+          # Check for cookies
+          COOKIES_ARG=""
+          if [ -f cookies.txt ] && [ -s cookies.txt ]; then
+            COOKIES_ARG="--cookies cookies.txt"
+            echo "Using cookies file for auth"
+          fi
+
+          # Download with robust settings
           yt-dlp --restrict-filenames \
-            -f "best[ext=mp4]/best" \
-            -o "video.%(ext)s" \
-            "$URL" 2>&1
-          FILE=$(ls video.* 2>/dev/null || ls *.mp4 *.mkv *.webm 2>/dev/null | head -1)
-          if [ -z "$FILE" ]; then
-            echo "No video file found"
+            --yes-playlist \
+            --ignore-errors \
+            --extractor-args "youtube:skip=webpage;player_client=android_web" \
+            $COOKIES_ARG \
+            $ITEMS_ARG \
+            -f "$FORMAT" \
+            --merge-output-format mp4 \
+            -o "downloads/%(playlist_index)03d-%(title).80s.%(ext)s" \
+            "$URL" 2>&1 || true
+
+          # Collect files
+          if [ -d "downloads" ] && [ "$(ls -A downloads/ 2>/dev/null)" ]; then
+            ls -1 downloads/ > filelist.txt
+            echo "Downloaded to downloads/ directory"
+          else
+            ls -1 *.mp4 *.mkv *.webm 2>/dev/null > filelist.txt || true
+            if [ -s filelist.txt ]; then
+              mkdir -p downloads
+              while IFS= read -r f; do mv "$f" "downloads/$f"; done < filelist.txt
+              ls -1 downloads/ > filelist.txt
+              echo "Moved files to downloads/"
+            fi
+          fi
+
+          # Verify we have files
+          if [ ! -s filelist.txt ]; then
+            echo "ERROR: No video files were downloaded"
+            ls -la
             exit 1
           fi
-          SIZE_MB=$(du -m "$FILE" | cut -f1)
-          echo "File: $FILE ($SIZE_MB MB)"
-          echo "filename=$FILE" >> $GITHUB_OUTPUT
+
+          TOTAL=$(wc -l < filelist.txt)
+          echo "total_files=$TOTAL" >> $GITHUB_OUTPUT
+          echo "source_url=$URL" >> $GITHUB_OUTPUT
+          echo "Successfully downloaded $TOTAL file(s)"
 
       - name: Upload to Telegram
         env:
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        shell: bash
         run: |
-          FILE="${{ steps.download.outputs.filename }}"
-          CAPTION="${{ github.event.client_payload.caption || inputs.caption }}"
-          EXT="${FILE##*.}"
-          if [ "$EXT" = "mp4" ] || [ "$EXT" = "mkv" ] || [ "$EXT" = "webm" ]; then
+          CAPTION="${{ github.event.client_payload.caption || inputs.caption || 'From Albedo' }}"
+          TOTAL=$(wc -l < filelist.txt)
+          COUNT=1
+
+          while IFS= read -r FILE; do
+            FILEPATH="downloads/$FILE"
+            if [ ! -f "$FILEPATH" ]; then
+              echo "WARNING: File not found: $FILEPATH"
+              COUNT=$((COUNT + 1))
+              continue
+            fi
+
+            EXT="${FILE##*.}"
+            SIZE_BYTES=$(stat -c%s "$FILEPATH" 2>/dev/null || stat -f%z "$FILEPATH" 2>/dev/null || echo "0")
+
+            # Compress if over 48MB (Telegram Bot API limit is 50MB)
+            if [ "$SIZE_BYTES" -gt 50331648 ]; then
+              echo "File is over 48MB ($((SIZE_BYTES/1048576))MB), compressing..."
+              COMPRESSED="downloads/compressed-${FILE}"
+              ffmpeg -y -i "$FILEPATH" \
+                -c:v libx264 -crf 28 \
+                -c:a aac -b:a 128k \
+                -movflags +faststart \
+                -vf "scale='min(1280,iw)':min'(720,ih)':force_original_aspect_ratio=decrease" \
+                "$COMPRESSED" 2>&1
+              if [ -f "$COMPRESSED" ]; then
+                mv "$COMPRESSED" "$FILEPATH"
+                echo "Compressed successfully"
+              else
+                echo "Compression failed, trying original file"
+              fi
+            fi
+
+            SIZE_MB=$(du -m "$FILEPATH" 2>/dev/null | cut -f1 || echo "?")
+
+            # Build caption with progress counter
+            if [ "$TOTAL" -gt 1 ]; then
+              VIDEO_LABEL="${CAPTION} - Video $COUNT/$TOTAL"
+            else
+              VIDEO_LABEL="$CAPTION"
+            fi
+
+            echo "Sending $FILEPATH (${SIZE_MB}MB) - $COUNT/$TOTAL"
+
+            if [ "$EXT" = "mp4" ] || [ "$EXT" = "mkv" ] || [ "$EXT" = "webm" ]; then
+              RESPONSE=$(curl -s -F "chat_id=$CHAT_ID" \
+                -F "video=@$FILEPATH" \
+                -F "caption=$VIDEO_LABEL" \
+                -F "supports_streaming=true" \
+                "https://api.telegram.org/bot$BOT_TOKEN/sendVideo")
+
+              if echo "$RESPONSE" | grep -q '"ok":true'; then
+                echo "Sent $COUNT/$TOTAL as video"
+              else
+                echo "Video send failed, trying as document..."
+                curl -s -F "chat_id=$CHAT_ID" \
+                  -F "document=@$FILEPATH" \
+                  -F "caption=$VIDEO_LABEL" \
+                  "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
+                echo "Sent $COUNT/$TOTAL as document (fallback)"
+              fi
+            else
+              curl -s -F "chat_id=$CHAT_ID" \
+                -F "document=@$FILEPATH" \
+                -F "caption=$VIDEO_LABEL" \
+                "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
+              echo "Sent $COUNT/$TOTAL as document"
+            fi
+
+            COUNT=$((COUNT + 1))
+            sleep 1
+          done < filelist.txt
+
+          # Summary message for multi-file sends
+          if [ "$TOTAL" -gt 1 ]; then
+            PLATFORM=$(echo "${{ steps.resolve.outputs.url }}" | sed 's|https\?://\([^/]*\).*|\1|')
             curl -s -F "chat_id=$CHAT_ID" \
-              -F "video=@$FILE" \
-              -F "caption=$CAPTION" \
-              -F "supports_streaming=true" \
-              "https://api.telegram.org/bot$BOT_TOKEN/sendVideo" 2>&1 || \
-            curl -s -F "chat_id=$CHAT_ID" \
-              -F "document=@$FILE" \
-              -F "caption=$CAPTION" \
-              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
-          else
-            curl -s -F "chat_id=$CHAT_ID" \
-              -F "document=@$FILE" \
-              -F "caption=$CAPTION" \
-              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
+              -F "text=Done: $TOTAL videos from $PLATFORM" \
+              "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
+            echo "Summary sent"
           fi
 
       - name: Cleanup
         if: always()
         run: |
-          rm -f video.* *.mp4 *.mkv *.webm
+          rm -rf downloads filelist.txt cookies.txt
           echo "Cleaned up"
