@@ -47,7 +47,7 @@ jobs:
         run: |
           URL="${{ github.event.client_payload.url || inputs.url }}"
           MAX="${{ github.event.client_payload.max_videos || inputs.max_videos || '3' }}"
-          FORMAT="bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best"
+          FORMAT="bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best"
 
           echo "URL: $URL"
           echo "Max videos: $MAX"
@@ -94,6 +94,7 @@ jobs:
 
           TOTAL=$(wc -l < filelist.txt)
           echo "total_files=$TOTAL" >> $GITHUB_OUTPUT
+          echo "source_url=$URL" >> $GITHUB_OUTPUT
           echo "Successfully downloaded $TOTAL file(s)"
 
       - name: Upload to Telegram
@@ -115,6 +116,26 @@ jobs:
             fi
 
             EXT="${FILE##*.}"
+            SIZE_BYTES=$(stat -c%s "$FILEPATH" 2>/dev/null || stat -f%z "$FILEPATH" 2>/dev/null || echo "0")
+
+            # Compress if over 48MB (Telegram Bot API limit is 50MB, safety margin)
+            if [ "$SIZE_BYTES" -gt 50331648 ]; then
+              echo "File is over 48MB ($((SIZE_BYTES/1048576))MB), compressing..."
+              COMPRESSED="downloads/compressed-${FILE}"
+              ffmpeg -y -i "$FILEPATH" \
+                -c:v libx264 -crf 28 \
+                -c:a aac -b:a 128k \
+                -movflags +faststart \
+                -vf "scale='min(1280,iw)':min'(720,ih)':force_original_aspect_ratio=decrease" \
+                "$COMPRESSED" 2>&1
+              if [ -f "$COMPRESSED" ]; then
+                mv "$COMPRESSED" "$FILEPATH"
+                echo "Compressed successfully"
+              else
+                echo "Compression failed, trying original file"
+              fi
+            fi
+
             SIZE_MB=$(du -m "$FILEPATH" 2>/dev/null | cut -f1 || echo "?")
 
             # Build caption with progress counter
@@ -157,7 +178,7 @@ jobs:
 
           # Summary message for multi-file sends
           if [ "$TOTAL" -gt 1 ]; then
-            PLATFORM=$(echo "${{ github.event.client_payload.url || inputs.url }}" | sed 's|https\?://\([^/]*\).*|\1|')
+            PLATFORM=$(echo "${{ steps.download.outputs.source_url }}" | sed 's|https\?://\([^/]*\).*|\1|')
             curl -s -F "chat_id=$CHAT_ID" \
               -F "text=Done: $TOTAL videos from $PLATFORM" \
               "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
