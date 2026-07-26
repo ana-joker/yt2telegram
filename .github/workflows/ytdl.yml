@@ -66,28 +66,16 @@ jobs:
               -F "video=@$FILE" \
               -F "caption=$CAPTION" \
               -F "supports_streaming=true" \
-              "https://api.telegram.org/bot$BOT_TOKEN/sendVideo" | python3 -c "
-        import sys, json
-        resp = json.load(sys.stdin)
-        if resp.get('ok'):
-            print('Video sent successfully')
-        else:
-            print(f'Failed: {resp}')
-            sys.exit(1)
-        "
+              "https://api.telegram.org/bot$BOT_TOKEN/sendVideo" 2>&1 || \
+            curl -s -F "chat_id=$CHAT_ID" \
+              -F "document=@$FILE" \
+              -F "caption=$CAPTION" \
+              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
           else
             curl -s -F "chat_id=$CHAT_ID" \
               -F "document=@$FILE" \
               -F "caption=$CAPTION" \
-              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument" | python3 -c "
-        import sys, json
-        resp = json.load(sys.stdin)
-        if resp.get('ok'):
-            print('File sent successfully')
-        else:
-            print(f'Failed: {resp}')
-            sys.exit(1)
-        "
+              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument"
           fi
 
       - name: Cleanup
