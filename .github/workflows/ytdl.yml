@@ -49,11 +49,24 @@ jobs:
 
       - name: Setup Cookies
         env:
-          COOKIES_B64: ${{ secrets.YT_COOKIES }}
+          COOKIES_SECRET: ${{ secrets.YT_COOKIES }}
         run: |
-          if [ -n "$COOKIES_B64" ]; then
-            echo "$COOKIES_B64" | base64 -d > cookies.txt
-            echo "Cookies decoded ($(wc -l < cookies.txt) lines)"
+          if [ -n "$COOKIES_SECRET" ]; then
+            # Try base64 decode first
+            echo "$COOKIES_SECRET" | base64 -d > cookies.txt 2>/dev/null || true
+            # Check if we got valid Netscape format
+            if head -n1 cookies.txt 2>/dev/null | grep -q "Netscape HTTP Cookie File"; then
+              echo "Cookies loaded ($(wc -l < cookies.txt) lines) - base64 decoded"
+            else
+              # Not base64 - treat as raw cookie text
+              echo "$COOKIES_SECRET" > cookies.txt
+              if head -n1 cookies.txt | grep -q "Netscape HTTP Cookie File"; then
+                echo "Cookies loaded ($(wc -l < cookies.txt) lines) - raw text"
+              else
+                echo "WARNING: cookies.txt not valid Netscape format"
+                rm -f cookies.txt
+              fi
+            fi
           else
             echo "WARNING: No cookies secret set - will try without auth"
           fi
@@ -98,18 +111,19 @@ jobs:
             ITEMS_ARG="--playlist-end $MAX"
           fi
 
-          # Check for cookies
+          # Check for valid cookies
           COOKIES_ARG=""
-          if [ -f cookies.txt ] && [ -s cookies.txt ]; then
+          if [ -f cookies.txt ] && [ -s cookies.txt ] && head -n1 cookies.txt | grep -q "Netscape HTTP Cookie File"; then
             COOKIES_ARG="--cookies cookies.txt"
             echo "Using cookies file for auth"
+          else
+            echo "No valid cookies file - proceeding without auth"
           fi
 
           # Download with robust settings
-          yt-dlp --restrict-filenames \
+           yt-dlp --restrict-filenames \
             --yes-playlist \
             --ignore-errors \
-
             $COOKIES_ARG \
             $ITEMS_ARG \
             -f "$FORMAT" \
