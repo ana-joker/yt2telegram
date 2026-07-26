@@ -41,6 +41,17 @@ jobs:
           pip install -q -U yt-dlp
           yt-dlp --version
 
+      - name: Setup Cookies
+        env:
+          COOKIES_B64: ${{ secrets.YT_COOKIES }}
+        run: |
+          if [ -n "$COOKIES_B64" ]; then
+            echo "$COOKIES_B64" | base64 -d > cookies.txt
+            echo "Cookies decoded ($(wc -l < cookies.txt) lines)"
+          else
+            echo "WARNING: No cookies secret set - will try without auth"
+          fi
+
       - name: Download Media
         id: download
         shell: bash
@@ -64,10 +75,17 @@ jobs:
           # Download with robust settings
           # --ignore-errors: skip videos that need auth, continue playlist
           # --extractor-args: try android client (works without cookies for most videos)
+          COOKIES_ARG=""
+          if [ -f cookies.txt ] && [ -s cookies.txt ]; then
+            COOKIES_ARG="--cookies cookies.txt"
+            echo "Using cookies file for auth"
+          fi
+
           yt-dlp --restrict-filenames \
             --yes-playlist \
             --ignore-errors \
             --extractor-args "youtube:skip=webpage;player_client=android_web" \
+            $COOKIES_ARG \
             $ITEMS_ARG \
             -f "$FORMAT" \
             --merge-output-format mp4 \
