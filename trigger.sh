@@ -10,15 +10,17 @@ if [ -z "$URL" ]; then
     exit 1
 fi
 
-echo "📥 Dispatching: $URL"
-gh api repos/ana-joker/yt2telegram/dispatches \
-    --method POST \
-    --field event_type="download-youtube" \
-    --field client_payload="{\"url\": \"$URL\", \"caption\": \"$CAPTION\"}" \
-    --silent
+echo "📥 Triggering download for: $URL"
+
+# Use workflow_dispatch (reliable) instead of repository_dispatch API
+gh workflow run "YouTube Downloader" \
+    --repo ana-joker/yt2telegram \
+    --field url="$URL" \
+    --field caption="$CAPTION"
 
 if [ $? -eq 0 ]; then
-    echo "✅ GitHub Action dispatched! Video arriving in your Telegram in ~1 min."
+    echo "✅ Pipeline triggered! Video arriving in your Telegram in ~1 min."
+    echo "   View at: https://github.com/ana-joker/yt2telegram/actions"
 else
-    echo "❌ Failed to dispatch. Check gh auth status."
+    echo "❌ Failed. Check gh auth status."
 fi
