@@ -38,10 +38,13 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg jq nodejs npm
+          sudo apt-get install -y -qq ffmpeg jq
           pip install -q -U yt-dlp
-          # Install jsbeautifier for yt-dlp n-challenge solving
-          npm install -g js-beautify 2>/dev/null || true
+          # Install Deno for YouTube n-challenge solving
+          curl -fsSL https://deno.land/install.sh | sh -s -- -y
+          echo "$HOME/.deno/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.deno/bin:$PATH"
+          deno --version
           yt-dlp --version
 
       - name: Setup Cookies
@@ -106,7 +109,7 @@ jobs:
           yt-dlp --restrict-filenames \
             --yes-playlist \
             --ignore-errors \
-            --extractor-args "youtube:player_client=android" \
+
             $COOKIES_ARG \
             $ITEMS_ARG \
             -f "$FORMAT" \
