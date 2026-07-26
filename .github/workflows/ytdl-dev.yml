@@ -61,9 +61,12 @@ jobs:
             ITEMS_ARG="--playlist-end $MAX"
           fi
 
-          # Download with robust format string
+          # Try android client first, then fallback to default
+          # --ignore-errors skips videos that need auth
           yt-dlp --restrict-filenames \
             --yes-playlist \
+            --ignore-errors \
+            --extractor-args "youtube:player_client=android" \
             $ITEMS_ARG \
             -f "$FORMAT" \
             --merge-output-format mp4 \
