@@ -19,10 +19,6 @@ on:
         required: false
         default: '3'
         type: string
-      chat_id:
-        description: Sender's Telegram chat ID (for multi-user routing)
-        required: false
-        type: string
 
 jobs:
   download:
@@ -185,7 +181,7 @@ jobs:
       - name: Upload to Telegram
         env:
           BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          CHAT_ID: ${{ github.event.inputs.chat_id || github.event.client_payload.chat_id || secrets.TG_CHAT_ID }}
+          CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         shell: bash
         run: |
           CAPTION="${{ github.event.client_payload.caption || inputs.caption || 'From Albedo' }}"
