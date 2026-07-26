@@ -121,9 +121,10 @@ jobs:
           fi
 
           # Download with robust settings
-           yt-dlp --restrict-filenames \
+          yt-dlp --restrict-filenames \
             --yes-playlist \
             --ignore-errors \
+            --remote-components ejs:github \
             $COOKIES_ARG \
             $ITEMS_ARG \
             -f "$FORMAT" \
