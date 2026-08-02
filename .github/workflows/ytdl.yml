@@ -117,17 +117,30 @@ jobs:
 
           # Determine platform and download strategy
           if echo "$URL" | grep -qE 'youtube\.com|youtu\.be'; then
-            echo "🎬 YouTube detected - using android client (no cookies needed)"
-            yt-dlp --restrict-filenames --yes-playlist --ignore-errors \
-              --remote-components ejs:github \
-              --extractor-args "youtube:player_client=android" \
-              $ITEMS_ARG -f "$FORMAT" --merge-output-format mp4 \
-              -o "downloads/%(playlist_index)03d-%(title).80s.%(ext)s" \
-              "$URL" 2>&1 || true
+            echo "🎬 YouTube detected - trying player clients in order"
+            # Try multiple YouTube player clients - YouTube blocks some periodically,
+            # so we cycle through them until one works
+            YT_CLIENTS="tv,web_safari,ios,android,web_embedded,tv_embedded,mweb"
+            download_ok=0
+            for client in $(echo "$YT_CLIENTS" | tr ',' ' '); do
+              echo "▶️ Trying youtube client: $client"
+              rm -rf downloads/*
+              yt-dlp --restrict-filenames --yes-playlist --ignore-errors \
+                --remote-components ejs:github \
+                --extractor-args "youtube:player_client=$client" \
+                $ITEMS_ARG -f "$FORMAT" --merge-output-format mp4 \
+                -o "downloads/%(playlist_index)03d-%(title).80s.%(ext)s" \
+                "$URL" 2>&1 || true
+              if [ -d "downloads" ] && [ "$(ls -A downloads/ 2>/dev/null)" ]; then
+                echo "✅ Client '$client' worked!"
+                download_ok=1
+                break
+              fi
+            done
 
-            # If android client failed, try with cookies
-            if [ ! -d "downloads" ] || [ -z "$(ls -A downloads/ 2>/dev/null)" ]; then
-              echo "🔄 Android client failed, trying with cookies..."
+            # If all clients failed, try with cookies
+            if [ "$download_ok" -eq 0 ]; then
+              echo "🔄 All clients failed, trying with cookies..."
               if [ -f cookies.txt ] && [ -s cookies.txt ] && head -n1 cookies.txt | grep -q "Netscape HTTP Cookie File"; then
                 yt-dlp --restrict-filenames --yes-playlist --ignore-errors \
                   --remote-components ejs:github \
