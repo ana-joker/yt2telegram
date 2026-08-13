@@ -64,19 +64,36 @@ jobs:
         run: |
           if [ -n "$COOKIES_SECRET" ]; then
             # Try base64 decode first
-            echo "$COOKIES_SECRET" | base64 -d > cookies.txt 2>/dev/null || true
-            # Check if we got valid Netscape format
-            if head -n1 cookies.txt 2>/dev/null | grep -q "Netscape HTTP Cookie File"; then
-              echo "Cookies loaded ($(wc -l < cookies.txt) lines) - base64 decoded"
+            echo "$COOKIES_SECRET" | base64 -d > cookies_raw.txt 2>/dev/null || true
+            if ! head -n1 cookies_raw.txt 2>/dev/null | grep -q "Netscape HTTP Cookie File"; then
+              echo "$COOKIES_SECRET" > cookies_raw.txt
+            fi
+
+            if head -n1 cookies_raw.txt 2>/dev/null | grep -q "Netscape HTTP Cookie File"; then
+              # Python 3.12 strict cookiejar sanitizer: fix domain flag mismatches & invalid exp
+              python3 -c "
+import sys
+valid = ['# Netscape HTTP Cookie File']
+with open('cookies_raw.txt', 'r', encoding='utf-8', errors='ignore') as f:
+    for line in f:
+        l = line.strip()
+        if not l or l.startswith('#'): continue
+        p = l.split('\t')
+        if len(p) < 7: continue
+        dom, flag, path, sec, exp, name, val = p[:7]
+        flag = 'TRUE' if dom.startswith('.') else 'FALSE'
+        try:
+            if int(exp) <= 0: exp = '2147483647'
+        except ValueError: exp = '2147483647'
+        valid.append(f'{dom}\t{flag}\t{path}\t{sec}\t{exp}\t{name}\t{val}')
+with open('cookies.txt', 'w', encoding='utf-8') as f:
+    f.write('\n'.join(valid) + '\n')
+"
+              rm -f cookies_raw.txt
+              echo "Cookies loaded & sanitized ($(wc -l < cookies.txt) lines)"
             else
-              # Not base64 - treat as raw cookie text
-              echo "$COOKIES_SECRET" > cookies.txt
-              if head -n1 cookies.txt | grep -q "Netscape HTTP Cookie File"; then
-                echo "Cookies loaded ($(wc -l < cookies.txt) lines) - raw text"
-              else
-                echo "WARNING: cookies.txt not valid Netscape format"
-                rm -f cookies.txt
-              fi
+              echo "WARNING: cookies.txt not valid Netscape format"
+              rm -f cookies_raw.txt cookies.txt
             fi
           else
             echo "WARNING: No cookies secret set - will try without auth"
