@@ -81,12 +81,21 @@ jobs:
             echo "WARNING: No cookies secret set - will try without auth"
           fi
 
-      - name: Resolve Reddit Shortlinks
+      - name: Resolve and Normalize URLs
         id: resolve
         shell: bash
         run: |
           URL="${{ github.event.client_payload.url || inputs.url }}"
           echo "Original URL: $URL"
+
+          # Convert YouTube /shorts/ to /watch?v= (bypasses Shorts-specific bot-wall)
+          if echo "$URL" | grep -qE 'youtube\.com/shorts/'; {
+            SHORT_ID=$(echo "$URL" | sed -E 's/.*shorts\/([a-zA-Z0-9_-]+).*/\1/')
+            if [ -n "$SHORT_ID" ]; then
+              URL="https://www.youtube.com/watch?v=$SHORT_ID"
+              echo "Converted Shorts URL to: $URL"
+            fi
+          }
 
           # Resolve Reddit /s/ shortlinks to full post URLs
           if echo "$URL" | grep -qE 'reddit\.com/r/[^/]+/s/'; then
@@ -135,14 +144,14 @@ jobs:
           # Determine platform and download strategy
           if echo "$URL" | grep -qE 'youtube\.com|youtu\.be'; then
             echo "🎬 YouTube detected - trying player clients in order"
-            # 2026 ladder: creator/VR clients bypass bot-checks most reliably.
-            # tv_embedded is REMOVED (yt-dlp reports "unsupported client" and wastes an attempt).
-            YT_CLIENTS="web_creator,ios_creator,android_creator,ios,android_vr,tv,web_safari,android,mweb,web_embedded"
+            # 2026 ladder: android, ios, tv, web_safari, mweb
+            YT_CLIENTS="android,ios,tv,web_safari,mweb,web_creator,web_embedded"
             download_ok=0
+            UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             for client in $(echo "$YT_CLIENTS" | tr ',' ' '); do
               echo "▶️ Trying youtube client: $client"
               rm -rf downloads/*
-              yt-dlp --impersonate Chrome --restrict-filenames --yes-playlist --ignore-errors \
+              yt-dlp --impersonate Chrome --user-agent "$UA" --restrict-filenames --yes-playlist --ignore-errors \
                 --remote-components ejs:github \
                 --extractor-args "youtube:player_client=$client" \
                 $AUDIO_OPTS $ITEMS_ARG -f "$FORMAT" --merge-output-format mp4 \
@@ -159,7 +168,7 @@ jobs:
             if [ "$download_ok" -eq 0 ]; then
               echo "🔄 All clients failed, trying with cookies..."
               if [ -f cookies.txt ] && [ -s cookies.txt ] && head -n1 cookies.txt | grep -q "Netscape HTTP Cookie File"; then
-                yt-dlp --impersonate Chrome --restrict-filenames --yes-playlist --ignore-errors \
+                yt-dlp --impersonate Chrome --user-agent "$UA" --restrict-filenames --yes-playlist --ignore-errors \
                   --remote-components ejs:github \
                   --cookies cookies.txt \
                   $AUDIO_OPTS $ITEMS_ARG -f "$FORMAT" --merge-output-format mp4 \
