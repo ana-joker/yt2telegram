@@ -89,13 +89,13 @@ jobs:
           echo "Original URL: $URL"
 
           # Convert YouTube /shorts/ to /watch?v= (bypasses Shorts-specific bot-wall)
-          if echo "$URL" | grep -qE 'youtube\.com/shorts/'; {
+          if echo "$URL" | grep -qE 'youtube\.com/shorts/'; then
             SHORT_ID=$(echo "$URL" | sed -E 's/.*shorts\/([a-zA-Z0-9_-]+).*/\1/')
             if [ -n "$SHORT_ID" ]; then
               URL="https://www.youtube.com/watch?v=$SHORT_ID"
               echo "Converted Shorts URL to: $URL"
             fi
-          }
+          fi
 
           # Resolve Reddit /s/ shortlinks to full post URLs
           if echo "$URL" | grep -qE 'reddit\.com/r/[^/]+/s/'; then
